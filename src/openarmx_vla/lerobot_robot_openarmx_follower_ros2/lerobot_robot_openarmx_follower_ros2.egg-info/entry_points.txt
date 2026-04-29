@@ -1,0 +1,2 @@
+[lerobot.robots]
+openarmx_follower_ros2 = lerobot_robot_openarmx_follower_ros2.config_openarmx_ros2:OpenArmXRos2Config
