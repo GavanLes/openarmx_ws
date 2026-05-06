@@ -24,6 +24,7 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/float64_multi_array.hpp"
+#include "sensor_msgs/msg/joint_state.hpp"
 
 #include <openarmx/can/socket/openarmx.hpp>
 #include <openarmx/robstride_motor/rs_motor_constants.hpp>
@@ -169,6 +170,14 @@ public:
         std::string topic = "/" + follower_prefix_ + "_forward_position_controller/commands";
         follower_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(topic, 10);
         RCLCPP_INFO(get_logger(), "从动端话题: %s", topic.c_str());
+
+        joint_state_pub_ = create_publisher<sensor_msgs::msg::JointState>("/joint_states", 10);
+        joint_state_names_.reserve(8);
+        for (int i = 1; i <= 7; ++i) {
+            joint_state_names_.push_back("openarmx_" + follower_prefix_ + "_joint" + std::to_string(i));
+        }
+        joint_state_names_.push_back("openarmx_" + follower_prefix_ + "_finger_joint1");
+        RCLCPP_INFO(get_logger(), "发布 JointState: /joint_states (%s arm)", follower_prefix_.c_str());
 
         // Timer
         auto period = std::chrono::microseconds(1000000 / control_rate_hz);
@@ -363,7 +372,22 @@ private:
             auto msg = std_msgs::msg::Float64MultiArray();
             msg.data = data;
             follower_pub_->publish(msg);
+            publishJointState(data);
         }
+    }
+
+    void publishJointState(const std::vector<double>& positions)
+    {
+        if (!joint_state_pub_ || positions.size() != joint_state_names_.size()) return;
+
+        auto msg = sensor_msgs::msg::JointState();
+        msg.header.stamp = now();
+        msg.header.frame_id = "base_link";
+        msg.name = joint_state_names_;
+        msg.position = positions;
+        msg.velocity.assign(positions.size(), 0.0);
+        msg.effort.assign(positions.size(), 0.0);
+        joint_state_pub_->publish(msg);
     }
 
     // Node state
@@ -400,6 +424,8 @@ private:
     int frame_count_ = 0;
 
     rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr follower_pub_;
+    rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_state_pub_;
+    std::vector<std::string> joint_state_names_;
     rclcpp::TimerBase::SharedPtr timer_;
 };
 

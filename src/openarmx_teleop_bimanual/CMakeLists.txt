@@ -33,6 +33,7 @@ find_package(orocos_kdl REQUIRED)
 find_package(kdl_parser REQUIRED)
 find_package(urdfdom REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(sensor_msgs REQUIRED)
 
 include_directories(
   include
@@ -90,7 +91,9 @@ target_link_libraries(teleop_bimanual_with_gravitycomp_single
 ament_target_dependencies(teleop_bimanual_with_gravitycomp_single
   rclcpp
   std_msgs
+  sensor_msgs
 )
+
 
 # Install executables
 install(TARGETS
