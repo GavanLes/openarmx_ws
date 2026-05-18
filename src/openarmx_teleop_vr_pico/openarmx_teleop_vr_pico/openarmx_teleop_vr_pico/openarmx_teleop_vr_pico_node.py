@@ -66,6 +66,9 @@ class OpenArmTeleopNode(Node):
         control_rate = float(self.get_parameter("control_rate").value)
         self.print_performance = bool(self.get_parameter("print_performance").value)
         self.publish_viz_tf = bool(self.get_parameter("publish_visualization_tf").value)
+        self.include_mimic_finger_joint = self._parameter_as_bool(
+            "include_mimic_finger_joint"
+        )
 
         core_config = TeleopConfig(
             urdf_path=urdf_path,
@@ -129,6 +132,7 @@ class OpenArmTeleopNode(Node):
         self.declare_parameter("fast_max_step_deg", 0.0)
         self.declare_parameter("ik_iterations", 3)
         self.declare_parameter("grip_threshold", 0.5)
+        self.declare_parameter("include_mimic_finger_joint", False)
 
         # ROS topics
         self.declare_parameter("rate_topic", "/pico_right_controller/rate")
@@ -214,6 +218,12 @@ class OpenArmTeleopNode(Node):
         self.get_logger().info(
             f"Publishing commands to: left={left_cmd_topic}, right={right_cmd_topic}"
         )
+
+    def _parameter_as_bool(self, name: str) -> bool:
+        value = self.get_parameter(name).value
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "on")
+        return bool(value)
 
     # ====================
     # ROS callbacks
@@ -327,12 +337,12 @@ class OpenArmTeleopNode(Node):
 
             if result.should_publish_left:
                 left_cmd = Float64MultiArray()
-                left_cmd.data = result.left_command
+                left_cmd.data = self._format_arm_command(result.left_command)
                 self.left_cmd_pub.publish(left_cmd)
 
             if result.should_publish_right:
                 right_cmd = Float64MultiArray()
-                right_cmd.data = result.right_command
+                right_cmd.data = self._format_arm_command(result.right_command)
                 self.right_cmd_pub.publish(right_cmd)
 
             if self.publish_viz_tf:
@@ -385,6 +395,14 @@ class OpenArmTeleopNode(Node):
                 float(pose_msg.pose.orientation.w),
             ),
         )
+
+    def _format_arm_command(self, command):
+        if not self.include_mimic_finger_joint or len(command) < 8:
+            return command
+
+        command_with_mimic = list(command)
+        command_with_mimic.append(float(command[7]))
+        return command_with_mimic
 
     def _publish_visualization_tfs(self, result, left_pose_msg, right_pose_msg):
         if result.left_target_transform is not None:

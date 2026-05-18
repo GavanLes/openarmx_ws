@@ -3,6 +3,8 @@ project(isaacsim)
 
 find_package(ament_cmake REQUIRED)
 find_package(rclpy REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 
 install(DIRECTORY
   scripts
@@ -13,6 +15,7 @@ install(DIRECTORY
 install(PROGRAMS
   scripts/run_isaacsim.py
   scripts/open_isaacsim_stage.py
+  scripts/openarmx_command_to_joint_state.py
   DESTINATION lib/${PROJECT_NAME}
 )
 ament_package()

@@ -90,6 +90,11 @@ def generate_launch_description():
             description='Grip value threshold: > enables teleop, <= disables (default: 0.5)'
         ),
         DeclareLaunchArgument(
+            'include_mimic_finger_joint',
+            default_value='false',
+            description='Append finger_joint1 value as finger_joint2 for Isaac Sim articulation control'
+        ),
+        DeclareLaunchArgument(
             'left_grip_topic',
             default_value='/pico_left_controller/grip',
             description='Topic for left controller grip value (deadman switch)'
@@ -113,6 +118,7 @@ def generate_launch_description():
     use_link4_ext = LaunchConfiguration('use_link4_ext')
     constraint_mode = LaunchConfiguration('constraint_mode')
     grip_threshold = LaunchConfiguration('grip_threshold')
+    include_mimic_finger_joint = LaunchConfiguration('include_mimic_finger_joint')
     left_grip_topic = LaunchConfiguration('left_grip_topic')
     right_grip_topic = LaunchConfiguration('right_grip_topic')
 
@@ -134,6 +140,7 @@ def generate_launch_description():
             'use_link4_ext': use_link4_ext,
             'constraint_mode': constraint_mode,
             'grip_threshold': grip_threshold,
+            'include_mimic_finger_joint': include_mimic_finger_joint,
             'left_grip_topic': left_grip_topic,
             'right_grip_topic': right_grip_topic,
         }]
