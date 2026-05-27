@@ -209,6 +209,18 @@ hardware_interface::CallbackReturn OpenArmX_v10HW::on_init(
               "Parameter node %s is now spinning in background thread",
               param_node_->get_name());
 
+  // Declare gripper force limit parameter (Nm, 0 = disabled)
+  param_node_->declare_parameter("gripper_force_limit", gripper_force_limit_);
+  RCLCPP_INFO(rclcpp::get_logger("OpenArmX_v10HW"),
+              "Declared parameter gripper_force_limit with default value %.2f",
+              gripper_force_limit_);
+
+  // Declare gripper close speed parameter (m/s in joint space, 0 = disabled)
+  param_node_->declare_parameter("gripper_close_speed", gripper_close_speed_);
+  RCLCPP_INFO(rclcpp::get_logger("OpenArmX_v10HW"),
+              "Declared parameter gripper_close_speed with default value %.3f m/s",
+              gripper_close_speed_);
+
   // Initialize OpenArmX with configurable CAN-FD setting
   RCLCPP_INFO(rclcpp::get_logger("OpenArmX_v10HW"),
               "Initializing OpenArmX on %s with CAN-FD %s...",
@@ -362,6 +374,7 @@ hardware_interface::CallbackReturn OpenArmX_v10HW::on_activate(
       auto gripper_motors = openarmx->get_gripper().get_motors();
       if (!gripper_motors.empty()) {
         pos_commands_[ARM_DOF] = motor_radians_to_joint(gripper_motors[0]->get_position());
+        prev_gripper_pos_cmd_ = pos_commands_[ARM_DOF];
       }
     }
     //////////////////////////////////////////////////////////////////////////////////////////////
@@ -436,6 +449,7 @@ hardware_interface::CallbackReturn OpenArmX_v10HW::on_activate(
       auto g_motors = openarmx->get_gripper().get_all_motors();
       if (!g_motors.empty()) {
         pos_commands_[ARM_DOF] = motor_radians_to_joint(g_motors[0]->get_position());
+        prev_gripper_pos_cmd_ = pos_commands_[ARM_DOF];
       }
     }
     //////////////////////////////////////////////////////////////////////////////////////////////
@@ -507,8 +521,8 @@ hardware_interface::return_type OpenArmX_v10HW::read(
       pos_states_[ARM_DOF] = motor_radians_to_joint(motor_pos);
 
       // Unimplemented: Velocity and torque mapping
-      vel_states_[ARM_DOF] = 0;  // gripper_motors[0]->get_velocity();
-      tau_states_[ARM_DOF] = 0;  // gripper_motors[0]->get_torque();
+      vel_states_[ARM_DOF] = gripper_motors[0]->get_velocity();
+      tau_states_[ARM_DOF] = gripper_motors[0]->get_torque();
     }
   }
 
@@ -559,7 +573,7 @@ void OpenArmX_v10HW::configure_motor_mit_mode(
 }
 
 hardware_interface::return_type OpenArmX_v10HW::write(
-    const rclcpp::Time& /*time*/, const rclcpp::Duration& /*period*/) {
+    const rclcpp::Time& /*time*/, const rclcpp::Duration& period) {
   const auto direction_multipliers = get_motor_direction_multipliers();
   if (control_mode_ == ControlMode::MIT) {
     // Motion control path (MIT)
@@ -580,15 +594,68 @@ hardware_interface::return_type OpenArmX_v10HW::write(
     openarmx->get_arm().send_motion_control_commands(arm_params);
 
     if (hand_ && joint_names_.size() > ARM_DOF) {
+      // Rate-limit closing speed (only when closing, not opening)
+      double dt = period.seconds();
+      if (gripper_close_speed_ > 0.0 && dt > 0.0 &&
+          pos_commands_[ARM_DOF] < prev_gripper_pos_cmd_) {
+        double max_step = gripper_close_speed_ * dt;
+        if (pos_commands_[ARM_DOF] < prev_gripper_pos_cmd_ - max_step) {
+          pos_commands_[ARM_DOF] = prev_gripper_pos_cmd_ - max_step;
+        }
+      }
+
       double motor_command = joint_to_motor_radians(pos_commands_[ARM_DOF]);
+      double motor_current = joint_to_motor_radians(pos_states_[ARM_DOF]);
+
+      // Torque-based contact-detection force limiting.
+      // When closing freely (no object), torque stays low → slow steady close.
+      // When torque exceeds the limit (contact detected) → hold position with
+      // a small margin to maintain constant gripping force.
+      double force_limit = gripper_force_limit_;
+      if (force_limit > 0.0 && tau_commands_[ARM_DOF] > 0.0 &&
+          tau_commands_[ARM_DOF] < force_limit) {
+        force_limit = tau_commands_[ARM_DOF];
+      }
+
+      double hold_ff_torque = 0.0;
+
+      if (force_limit > 0.0 && motor_command < motor_current) {
+        double actual_torque = std::abs(tau_states_[ARM_DOF]);
+
+        if (gripper_hold_active_) {
+          if (actual_torque < force_limit * 0.3) {
+            // Torque dropped significantly — object released or slipped
+            gripper_hold_active_ = false;
+          } else {
+            // Keep holding at the contact position
+            motor_command = gripper_hold_target_;
+            pos_commands_[ARM_DOF] = motor_radians_to_joint(motor_command);
+            hold_ff_torque = -force_limit * 0.5;
+          }
+        } else if (actual_torque > force_limit) {
+          // Contact detected — switch to hold mode
+          gripper_hold_active_ = true;
+          double hold_margin = force_limit / kp_values_[ARM_DOF];
+          gripper_hold_target_ = motor_current - hold_margin;
+          motor_command = gripper_hold_target_;
+          pos_commands_[ARM_DOF] = motor_radians_to_joint(motor_command);
+          hold_ff_torque = -force_limit * 0.5;
+        }
+      } else if (motor_command >= motor_current) {
+        // Opening or stationary — clear hold state
+        gripper_hold_active_ = false;
+      }
+
       openarmx::robstride_motor::MotionControlParam gripper_param;
       // Use the 8th KP/KD value for gripper (index 7)
       gripper_param.kp = kp_values_[ARM_DOF];
       gripper_param.kd = kd_values_[ARM_DOF];
       gripper_param.position = motor_command;
       gripper_param.velocity = 0.0;
-      gripper_param.torque = 0.0;
+      gripper_param.torque = hold_ff_torque;
       openarmx->get_gripper().send_motion_control_commands({gripper_param});
+
+      prev_gripper_pos_cmd_ = pos_commands_[ARM_DOF];
     }
   } else {
     // CSP path: write LOC_REF for each motor
@@ -608,10 +675,53 @@ hardware_interface::return_type OpenArmX_v10HW::write(
       auto g_motors = openarmx->get_gripper().get_all_motors();
       auto g_devices = openarmx->get_gripper().get_all_devices();
       if (!g_motors.empty()) {
-        float motor_command = static_cast<float>(joint_to_motor_radians(pos_commands_[ARM_DOF]));
-        auto pkt = csp_set_target_position_packet(*g_motors[0], motor_command);
+        // Rate-limit closing speed
+        double dt = period.seconds();
+        if (gripper_close_speed_ > 0.0 && dt > 0.0 &&
+            pos_commands_[ARM_DOF] < prev_gripper_pos_cmd_) {
+          double max_step = gripper_close_speed_ * dt;
+          if (pos_commands_[ARM_DOF] < prev_gripper_pos_cmd_ - max_step) {
+            pos_commands_[ARM_DOF] = prev_gripper_pos_cmd_ - max_step;
+          }
+        }
+
+        double motor_command = joint_to_motor_radians(pos_commands_[ARM_DOF]);
+        double motor_current = joint_to_motor_radians(pos_states_[ARM_DOF]);
+
+        // Same torque-based contact-detection force limiting as MIT mode
+        double force_limit = gripper_force_limit_;
+        if (force_limit > 0.0 && tau_commands_[ARM_DOF] > 0.0 &&
+            tau_commands_[ARM_DOF] < force_limit) {
+          force_limit = tau_commands_[ARM_DOF];
+        }
+
+        if (force_limit > 0.0 && motor_command < motor_current) {
+          double actual_torque = std::abs(tau_states_[ARM_DOF]);
+
+          if (gripper_hold_active_) {
+            if (actual_torque < force_limit * 0.3) {
+              gripper_hold_active_ = false;
+            } else {
+              motor_command = gripper_hold_target_;
+              pos_commands_[ARM_DOF] = motor_radians_to_joint(motor_command);
+            }
+          } else if (actual_torque > force_limit) {
+            gripper_hold_active_ = true;
+            double hold_margin = force_limit / kp_values_[ARM_DOF];
+            gripper_hold_target_ = motor_current - hold_margin;
+            motor_command = gripper_hold_target_;
+            pos_commands_[ARM_DOF] = motor_radians_to_joint(motor_command);
+          }
+        } else if (motor_command >= motor_current) {
+          gripper_hold_active_ = false;
+        }
+
+        auto pkt = csp_set_target_position_packet(
+            *g_motors[0], static_cast<float>(motor_command));
         auto frame = g_devices[0]->create_can_frame(pkt.send_can_id, pkt.data);
         sock.write_can_frame(frame);
+
+        prev_gripper_pos_cmd_ = pos_commands_[ARM_DOF];
       }
     }
   }
@@ -686,7 +796,23 @@ rcl_interfaces::msg::SetParametersResult OpenArmX_v10HW::parameters_callback(
     std::string param_name = param.get_name();
 
     // Check if it's a KP parameter
-    if (param_name.find("kp_joint") == 0) {
+    if (param_name == "gripper_force_limit") {
+      double new_value = param.as_double();
+      double old_value = gripper_force_limit_;
+      gripper_force_limit_ = new_value;
+
+      RCLCPP_INFO(rclcpp::get_logger("OpenArmX_v10HW"),
+                  "Updated %s: %.2f -> %.2f",
+                  param_name.c_str(), old_value, new_value);
+    } else if (param_name == "gripper_close_speed") {
+      double new_value = param.as_double();
+      double old_value = gripper_close_speed_;
+      gripper_close_speed_ = new_value;
+
+      RCLCPP_INFO(rclcpp::get_logger("OpenArmX_v10HW"),
+                  "Updated %s: %.3f -> %.3f",
+                  param_name.c_str(), old_value, new_value);
+    } else if (param_name.find("kp_joint") == 0) {
       // Extract joint index from parameter name (kp_joint1 -> index 0)
       size_t joint_idx = std::stoi(param_name.substr(8)) - 1;
 

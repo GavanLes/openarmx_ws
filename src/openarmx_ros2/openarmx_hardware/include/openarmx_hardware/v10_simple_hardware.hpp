@@ -162,6 +162,20 @@ class OpenArmX_v10HW : public hardware_interface::SystemInterface {
   std::vector<double> kd_values_;
   std::mutex kp_kd_mutex_;  // Protect concurrent access to KP/KD values
 
+  // Gripper force limit (Nm) - max gripping torque before contact detection.
+  // 0.0 = disabled (no force limit). Default: 2.0 Nm for gentle grip.
+  double gripper_force_limit_ = 2.0;
+
+  // Gripper closing speed limit (m/s in joint space, 0 = disabled).
+  // Limits how fast the gripper target position can decrease per cycle.
+  // Default: 0.02 m/s (~2.2s full close stroke of 44mm).
+  double gripper_close_speed_ = 0.05;
+  double prev_gripper_pos_cmd_ = 0.044;  // previous cycle's target (joint m), init open
+
+  // Gripper contact-hold state (torque-based)
+  bool gripper_hold_active_ = false;
+  double gripper_hold_target_ = -1.0;  // motor rad, -1 = sentinel
+
   // OpenArmX instance
   std::unique_ptr<openarmx::can::socket::OpenArmX> openarmx;
 
