@@ -93,10 +93,20 @@ class OpenArmXCommandToJointState(Node):
         )
 
     def _on_left_command(self, msg):
-        self.left_command = list(msg.data)
+        raw = list(msg.data)
+        if self.left_command is not None:
+            alpha = 0.3  # EMA 平滑系数：0.3=快，0.1=慢但更稳
+            self.left_command = [alpha * r + (1 - alpha) * p for r, p in zip(raw, self.left_command)]
+        else:
+            self.left_command = raw
 
     def _on_right_command(self, msg):
-        self.right_command = list(msg.data)
+        raw = list(msg.data)
+        if self.right_command is not None:
+            alpha = 0.3
+            self.right_command = [alpha * r + (1 - alpha) * p for r, p in zip(raw, self.right_command)]
+        else:
+            self.right_command = raw
 
     def _on_isaac_joint_state(self, msg):
         """过滤掉 finger_joint2（夹爪 mimic 关节），其余保留。"""
